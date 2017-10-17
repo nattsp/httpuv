@@ -14,6 +14,19 @@
 #include "filedatasource.h"
 #include <Rinternals.h>
 
+
+// The uv loop that we'll use. Should be accessed via get_io_loop().
+uv_loop_t io_loop;
+bool io_loop_initialized = false;
+uv_loop_t* get_io_loop() {
+  if (!io_loop_initialized) {
+    uv_loop_init(&io_loop);
+    io_loop_initialized = true;
+  }
+
+  return &io_loop;
+}
+
 std::string normalizeHeaderName(const std::string& name) {
   std::string result = name;
   for (std::string::iterator it = result.begin();
@@ -345,7 +358,7 @@ Rcpp::RObject makeTcpServer(const std::string& host, int port,
     new RWebApplication(onHeaders, onBodyData, onRequest, onWSOpen,
                         onWSMessage, onWSClose);
   uv_stream_t* pServer = createTcpServer(
-    uv_default_loop(), host.c_str(), port, (WebApplication*)pHandler);
+    get_io_loop(), host.c_str(), port, (WebApplication*)pHandler);
 
   if (!pServer) {
     return R_NilValue;
@@ -371,7 +384,7 @@ Rcpp::RObject makePipeServer(const std::string& name,
     new RWebApplication(onHeaders, onBodyData, onRequest, onWSOpen,
                         onWSMessage, onWSClose);
   uv_stream_t* pServer = createPipeServer(
-    uv_default_loop(), name.c_str(), mask, (WebApplication*)pHandler);
+    get_io_loop(), name.c_str(), mask, (WebApplication*)pHandler);
 
   if (!pServer) {
     return R_NilValue;
@@ -401,7 +414,7 @@ bool run(int timeoutMillis) {
   int r;
 
   if (!timer_req.loop) {
-    r = uv_timer_init(uv_default_loop(), &timer_req);
+    r = uv_timer_init(get_io_loop(), &timer_req);
     if (r) {
       throwError(r,
           "Failed to initialize libuv timeout timer: ");
@@ -422,12 +435,12 @@ bool run(int timeoutMillis) {
 #ifndef _WIN32
   signal(SIGPIPE, SIG_IGN);
 #endif
-  return uv_run(uv_default_loop(), timeoutMillis == NA_INTEGER ? UV_RUN_NOWAIT : UV_RUN_ONCE);
+  return uv_run(get_io_loop(), timeoutMillis == NA_INTEGER ? UV_RUN_NOWAIT : UV_RUN_ONCE);
 }
 
 // [[Rcpp::export]]
 void stopLoop() {
-  uv_stop(uv_default_loop());
+  uv_stop(get_io_loop());
 }
 
 // [[Rcpp::export]]
@@ -441,7 +454,7 @@ std::string base64encode(const Rcpp::RawVector& x) {
  * On UNIX-like environments: Uses the R event loop to trigger the libuv default loop. This is a similar mechanism as that used by Rhttpd.
  * It adds an event listener on the port where the TCP server was created by libuv. This triggers uv_run on the
  * default loop any time there is an event on the server port. It also adds an event listener to a file descriptor
- * exposed by the uv_default_loop to trigger uv_run whenever necessary. It uses the non-blocking version
+ * exposed by the get_io_loop to trigger uv_run whenever necessary. It uses the non-blocking version
  * of uv_run (UV_RUN_NOWAIT).
  *
  * On Windows: creates a thread that runs the libuv default loop. It uses the usual "service" mechanism
@@ -462,7 +475,7 @@ void loop_input_handler(void *data) {
   // processing events
   // deals with strange behavior in some Ubuntu installations
   for (int i=0; i < 5; ++i) {
-    uv_run(uv_default_loop(), UV_RUN_NOWAIT);
+    uv_run(get_io_loop(), UV_RUN_NOWAIT);
   }
   #else
   bool res = 1;
@@ -528,7 +541,7 @@ Rcpp::RObject daemonize(std::string handle) {
    int fd = pServer->io_watcher.fd;
    dServer->serverHandler = addInputHandler(R_InputHandlers, fd, &loop_input_handler, UVSERVERACTIVITY);
 
-   fd = uv_backend_fd(uv_default_loop());
+   fd = uv_backend_fd(get_io_loop());
    dServer->loopHandler = addInputHandler(R_InputHandlers, fd, &loop_input_handler, UVLOOPACTIVITY);
    #else
    if (dServer->server_thread) {
