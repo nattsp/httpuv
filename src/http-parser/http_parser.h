@@ -245,6 +245,15 @@ struct http_parser {
    */
   unsigned int upgrade : 1;
 
+  /* If there's a on_headers_complete callback, 1 means the parser is
+   * waiting for it to indicate that it's finished by calling
+   * http_parser_on_headers_completed(), then call http_parser_execute()
+   * to continue parsing. */
+  int waiting_for_headers_completed;
+  /* The status code set by the application code after processing the
+   * headers. */
+  int headers_status;
+
   /** PUBLIC **/
   void *data; /* A pointer to get hook to the "connection" or "socket" object */
 };
@@ -324,6 +333,8 @@ size_t http_parser_execute(http_parser *parser,
                            const char *data,
                            size_t len);
 
+/* Tells the parser that the on_headers stuff is finished. */
+void http_parser_on_headers_completed(http_parser *parser);
 
 /* If http_should_keep_alive() in the on_headers_complete or
  * on_message_complete callback returns 0, then this should be

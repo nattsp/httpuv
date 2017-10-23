@@ -339,6 +339,12 @@ enum state
   , s_chunk_size_almost_done
 
   , s_headers_almost_done
+
+  /* When the (async) on_headers function has been called but we're still
+   * waiting for a response. */
+  , s_wait_for_on_headers_completed
+  , s_on_headers_completed
+
   , s_headers_done
 
   /* Important: 's_headers_done' must be the last 'header' state. All
@@ -706,6 +712,12 @@ size_t http_parser_execute (http_parser *parser,
       COUNT_HEADER_SIZE(1);
 
 reexecute:
+
+    /* Waiting for on_headers processing to finish. Don't do anything. */
+    if (CURRENT_STATE() == s_wait_for_on_headers_completed) {
+      RETURN(p - data);
+    }
+
     switch (CURRENT_STATE()) {
 
       case s_dead:
@@ -1791,14 +1803,41 @@ reexecute:
           goto error;
         }
 
-        UPDATE_STATE(s_headers_done);
-
         /* Set this here so that on_headers_complete() callbacks can see it */
         parser->upgrade =
           ((parser->flags & (F_UPGRADE | F_CONNECTION_UPGRADE)) ==
            (F_UPGRADE | F_CONNECTION_UPGRADE) ||
            parser->method == HTTP_CONNECT);
 
+        if (settings->on_headers_complete) {
+          UPDATE_STATE(s_wait_for_on_headers_completed);
+          /* This records the same information as the state above, but is
+           * externally visible.
+           */
+          parser->waiting_for_headers_completed = 1;
+          settings->on_headers_complete(parser);
+          RETURN(p - data);
+
+        } else {
+          /* Move on to the next state */
+          UPDATE_STATE(s_on_headers_completed);
+        }
+        REEXECUTE();
+      }
+
+      /* We enter this state in one of two ways: if there is no
+       * on_headers_complete() function, or if
+       * http_parser_on_headers_completed() has been called, and then this
+       * function is called again.
+       */
+      case s_on_headers_completed:
+      {
+        /* Note: We've modified the below code. We don't call the
+         * headers_complete callback here, because we've called it above. We
+         * only check for the presence of the on_headers_complete function; if
+         * it exists it would have been called above, and we'll enter the
+         * switch statement.
+         */
         /* Here we call the headers_complete callback. This is somewhat
          * different than other callbacks because if the user returns 1, we
          * will interpret that as saying that this message has no body. This
@@ -1809,7 +1848,7 @@ reexecute:
          * we have to simulate it by handling a change in errno below.
          */
         if (settings->on_headers_complete) {
-          switch (settings->on_headers_complete(parser)) {
+          switch (parser->headers_status) {
             case 0:
               break;
 
@@ -1829,6 +1868,8 @@ reexecute:
         if (HTTP_PARSER_ERRNO(parser) != HPE_OK) {
           RETURN(p - data);
         }
+
+        UPDATE_STATE(s_headers_done);
 
         REEXECUTE();
       }
@@ -2090,6 +2131,14 @@ error:
   RETURN(p - data);
 }
 
+void http_parser_on_headers_completed(http_parser *parser) {
+  /* We unfortunately have to set the state in two places. parser->state is
+   * used internally by the parser, and parser->waiting_for_headers_completed
+   * externally visible.
+   */
+  parser->state = s_on_headers_completed;
+  parser->waiting_for_headers_completed = 0;
+}
 
 /* Does the parser need to see an EOF to find the end of the message? */
 int
@@ -2150,6 +2199,8 @@ http_parser_init (http_parser *parser, enum http_parser_type t)
   parser->type = t;
   parser->state = (t == HTTP_REQUEST ? s_start_req : (t == HTTP_RESPONSE ? s_start_res : s_start_req_or_res));
   parser->http_errno = HPE_OK;
+  parser->waiting_for_headers_completed = 0;
+  parser->headers_status = -1;
 }
 
 void
